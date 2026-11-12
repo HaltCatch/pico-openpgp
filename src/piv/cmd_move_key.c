@@ -30,6 +30,7 @@ int cmd_move_key(void) {
     if (to == from) {
         return SW_INCORRECT_P1P2();
     }
+    const uint8_t from_slot = from, to_slot = to;
     if (from == 0x93) {
         from = EF_PIV_KEY_RETIRED18;
     }
@@ -40,60 +41,9 @@ int cmd_move_key(void) {
     if (!(efs = file_search_by_fid(from, NULL, SPECIFY_EF)) || (!(efd = file_search_by_fid(to, NULL, SPECIFY_EF)) && to != 0xFF)) {
         return SW_FILE_NOT_FOUND();
     }
-    uint16_t cert_from_fid = 0;
-    uint16_t cert_to_fid = 0;
-    if (from == EF_PIV_KEY_AUTHENTICATION) {
-        cert_from_fid = EF_PIV_AUTHENTICATION;
-    }
-    else if (from == EF_PIV_KEY_SIGNATURE) {
-        cert_from_fid = EF_PIV_SIGNATURE;
-    }
-    else if (from == EF_PIV_KEY_KEYMGM) {
-        cert_from_fid = EF_PIV_KEY_MANAGEMENT;
-    }
-    else if (from == EF_PIV_KEY_CARDAUTH) {
-        cert_from_fid = EF_PIV_CARD_AUTH;
-    }
-    else if (from == EF_PIV_KEY_RETIRED18) {
-        cert_from_fid = EF_PIV_RETIRED18;
-    }
-    else {
-        cert_from_fid = from + 0xC08B;
-    }
-    if (to != 0xFF) {
-        if (to == EF_PIV_KEY_AUTHENTICATION) {
-            cert_to_fid = EF_PIV_AUTHENTICATION;
-        }
-        else if (to == EF_PIV_KEY_SIGNATURE) {
-            cert_to_fid = EF_PIV_SIGNATURE;
-        }
-        else if (to == EF_PIV_KEY_KEYMGM) {
-            cert_to_fid = EF_PIV_KEY_MANAGEMENT;
-        }
-        else if (to == EF_PIV_KEY_CARDAUTH) {
-            cert_to_fid = EF_PIV_CARD_AUTH;
-        }
-        else if (to == EF_PIV_KEY_RETIRED18) {
-            cert_to_fid = EF_PIV_RETIRED18;
-        }
-        else {
-            cert_to_fid = to + 0xC08B;
-        }
-    }
-
-    file_t *ef_cert_from = file_search_by_fid(cert_from_fid, NULL, SPECIFY_EF);
-    file_t *ef_cert_to = NULL;
-    if (to != 0xFF) {
-        if (!(ef_cert_to = file_search_by_fid(cert_to_fid, NULL, SPECIFY_EF))) {
-            return SW_FILE_NOT_FOUND();
-        }
-    }
-
+    // Certificates belong to slots and are managed separately via PUT DATA.
     uint8_t key_data[4096 / 8] = { 0 };
     byte_buffer_t key = BYTE_BUFFER(key_data, sizeof(key_data));
-    uint8_t cert_data[OPENPGP_MAX_OBJECT_SIZE] = { 0 };
-    uint16_t cert_len = 0;
-    bool has_cert = false;
     uint8_t *meta_copy = NULL;
     size_t meta_len = 0;
     int status = SW_OK();
@@ -114,15 +64,7 @@ int cmd_move_key(void) {
             status = SW_EXEC_ERROR();
             goto cleanup;
         }
-        if (ef_cert_from && file_has_data(ef_cert_from)) {
-            cert_len = (uint16_t)MIN(file_get_size(ef_cert_from), OPENPGP_MAX_OBJECT_SIZE);
-            if (file_read_at(ef_cert_from, 0, BYTE_ARRAY(cert_data, cert_len)) != PICOKEYS_OK) {
-                status = SW_MEMORY_FAILURE();
-                goto cleanup;
-            }
-            has_cert = true;
-        }
-        byte_array_t metadata = meta_find(from);
+        byte_array_t metadata = meta_find(from_slot);
         if (metadata.len > 0) {
             if (!metadata.data) {
                 status = SW_MEMORY_FAILURE();
@@ -142,34 +84,26 @@ int cmd_move_key(void) {
             status = SW_EXEC_ERROR();
             goto cleanup;
         }
-        if (has_cert) {
-            r = file_put_data(ef_cert_to, CONST_BYTE_ARRAY(cert_data, cert_len));
+        if (meta_len > 0) {
+            r = meta_add(to_slot, CONST_BYTE_ARRAY(meta_copy, meta_len));
         }
         else {
-            r = flash_clear_file(ef_cert_to);
+            r = meta_delete(to_slot);
         }
         if (r != PICOKEYS_OK) {
             status = SW_MEMORY_FAILURE();
             goto cleanup;
         }
-        if (meta_len > 0) {
-            r = meta_add(to, CONST_BYTE_ARRAY(meta_copy, meta_len));
-        }
-        else {
-            r = meta_delete(to);
-        }
-        if (r != PICOKEYS_OK) {
+        // Keep the source usable until both destination key and policy are
+        // durable. A failed commit must not turn a move into data loss.
+        if (!flash_commit_sync(5000)) {
             status = SW_MEMORY_FAILURE();
             goto cleanup;
         }
     }
 
-    r = meta_delete(from);
+    r = meta_delete(from_slot);
     if (r != PICOKEYS_OK && r != PICOKEYS_ERR_FILE_NOT_FOUND) {
-        status = SW_MEMORY_FAILURE();
-        goto cleanup;
-    }
-    if (ef_cert_from && flash_clear_file(ef_cert_from) != PICOKEYS_OK) {
         status = SW_MEMORY_FAILURE();
         goto cleanup;
     }
@@ -188,6 +122,5 @@ int cmd_move_key(void) {
 cleanup:
     free(meta_copy);
     mbedtls_platform_zeroize(key_data, sizeof(key_data));
-    mbedtls_platform_zeroize(cert_data, sizeof(cert_data));
     return status;
 }

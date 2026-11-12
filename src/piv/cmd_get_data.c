@@ -49,10 +49,16 @@ int cmd_piv_get_data(void) {
         fid <<= 8;
         fid |= apdu.data[2 + lt];
     }
-    if ((fid & 0xFFFF00) != 0x5FC100 && fid != EF_PIV_BITGT && fid != EF_PIV_DISCOVERY && fid != PIV_DATA_ADMIN_ID && fid != PIV_DATA_ATTESTATION_ID) {
+    if ((fid & 0xFFFF00) != 0x5FC100 && fid != EF_PIV_BITGT && fid != EF_PIV_DISCOVERY && !piv_writable_vendor_object(fid) && fid != PIV_DATA_ATTESTATION_ID) {
         return SW_FILE_NOT_FOUND();
     }
     uint16_t file_id = (uint16_t)(fid & 0xFFFF);
+    // These PIV objects require PIN verification. Yubico clients also use
+    // PRINTED for the PIN-protected management key.
+    if ((file_id == EF_PIV_FINGERPRINTS || file_id == EF_PIV_FACIAL ||
+         file_id == EF_PIV_PRINTED || file_id == EF_PIV_IRIS) && !has_pwpiv) {
+        return SW_SECURITY_STATUS_NOT_SATISFIED();
+    }
     bool is_card_capability = file_id == EF_PIV_CAPABILITY;
     file_t *ef = file_search_by_fid(file_id, NULL, SPECIFY_EF);
     if (ef || is_card_capability) {
@@ -69,7 +75,16 @@ int cmd_piv_get_data(void) {
                 if (ef->data) {
                     data_len = MIN(file_get_size(ef), OPENPGP_MAX_OBJECT_SIZE);
                     data_len = MIN(data_len, OPENPGP_MAX_RESPONSE_SIZE - 4);
-                    memcpy(res_APDU + res_APDU_size, file_get_data(ef), data_len);
+                    if (file_id == EF_PIV_ATTESTATION && data_len > 0 && file_get_data(ef)[0] == 0x30) {
+                        // Generated attestation is stored as DER. GET DATA uses
+                        // the same certificate object encoding as user slots.
+                        int wrapped = piv_format_certificate_object(file_get_data(ef), data_len,
+                            res_APDU + res_APDU_size, OPENPGP_MAX_RESPONSE_SIZE - 6);
+                        if (wrapped < 0) return SW_MEMORY_FAILURE();
+                        data_len = (uint16_t)wrapped;
+                    } else {
+                        memcpy(res_APDU + res_APDU_size, file_get_data(ef), data_len);
+                    }
                 }
             }
         }

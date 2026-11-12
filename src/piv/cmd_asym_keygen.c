@@ -49,22 +49,6 @@ int cmd_asym_keygen(void) {
     if (!piv_resolve_policies(key_ref, has_aaa, &aaa, has_aab, &aab, &pin_policy, &touch_policy)) {
         return SW_INCORRECT_PARAMS();
     }
-    uint16_t key_cert = 0;
-    if (key_ref == EF_PIV_KEY_AUTHENTICATION) {
-        key_cert = EF_PIV_AUTHENTICATION;
-    }
-    else if (key_ref == EF_PIV_KEY_SIGNATURE) {
-        key_cert = EF_PIV_SIGNATURE;
-    }
-    else if (key_ref == EF_PIV_KEY_KEYMGM) {
-        key_cert = EF_PIV_KEY_MANAGEMENT;
-    }
-    else if (key_ref == EF_PIV_KEY_CARDAUTH) {
-        key_cert = EF_PIV_CARD_AUTH;
-    }
-    else {
-        key_cert = key_ref + 0xC08B;
-    }
     if (a80.data[0] == PIV_ALGO_RSA1024 || a80.data[0] == PIV_ALGO_RSA2048 || a80.data[0] == PIV_ALGO_RSA3072) {
         printf("KEYPAIR RSA\r\n");
         tlv_ctx_t a81 = {0};
@@ -84,28 +68,6 @@ int cmd_asym_keygen(void) {
             return SW_EXEC_ERROR();
         }
         make_rsa_response(&rsa);
-        uint8_t cert[2048];
-        r = x509_create_cert(&rsa, a80.data[0], key_ref, false, cert, sizeof(cert));
-        if (r <= 0) {
-            mbedtls_rsa_free(&rsa);
-            return SW_EXEC_ERROR();
-        }
-        uint16_t cert_len = (uint16_t)r;
-        uint16_t object_len = tlv_len_tag(0x70, cert_len) + 3;
-        if (object_len > sizeof(cert)) {
-            mbedtls_rsa_free(&rsa);
-            return SW_EXEC_ERROR();
-        }
-        r = piv_format_certificate_object(cert + sizeof(cert) - cert_len, cert_len, cert + sizeof(cert) - object_len, sizeof(cert));
-        if (r <= 0) {
-            mbedtls_rsa_free(&rsa);
-            return SW_EXEC_ERROR();
-        }
-        file_t *ef = file_search_by_fid(key_cert, NULL, SPECIFY_ANY);
-        if (!ef || file_put_data(ef, CONST_BYTE_ARRAY(cert + sizeof(cert) - object_len, r)) != PICOKEYS_OK) {
-            mbedtls_rsa_free(&rsa);
-            return SW_EXEC_ERROR();
-        }
         r = store_keys(&rsa, ALGO_RSA, key_ref == 0x93 ? EF_PIV_KEY_RETIRED18 : key_ref, false);
         mbedtls_rsa_free(&rsa);
         if (r != PICOKEYS_OK) {
@@ -123,28 +85,6 @@ int cmd_asym_keygen(void) {
             return SW_EXEC_ERROR();
         }
         make_ecdsa_response(&ecdsa);
-        uint8_t cert[2048];
-        r = x509_create_cert(&ecdsa, a80.data[0], key_ref, false, cert, sizeof(cert));
-        if (r <= 0) {
-            mbedtls_ecdsa_free(&ecdsa);
-            return SW_EXEC_ERROR();
-        }
-        uint16_t cert_len = (uint16_t)r;
-        uint16_t object_len = tlv_len_tag(0x70, cert_len) + 3;
-        if (object_len > sizeof(cert)) {
-            mbedtls_ecdsa_free(&ecdsa);
-            return SW_EXEC_ERROR();
-        }
-        r = piv_format_certificate_object(cert + sizeof(cert) - cert_len, cert_len, cert + sizeof(cert) - object_len, sizeof(cert));
-        if (r <= 0) {
-            mbedtls_ecdsa_free(&ecdsa);
-            return SW_EXEC_ERROR();
-        }
-        file_t *ef = file_search_by_fid(key_cert, NULL, SPECIFY_ANY);
-        if (!ef || file_put_data(ef, CONST_BYTE_ARRAY(cert + sizeof(cert) - object_len, r)) != PICOKEYS_OK) {
-            mbedtls_ecdsa_free(&ecdsa);
-            return SW_EXEC_ERROR();
-        }
         r = store_keys(&ecdsa, ALGO_ECDSA, key_ref == 0x93 ? EF_PIV_KEY_RETIRED18 : key_ref, false);
         mbedtls_ecdsa_free(&ecdsa);
         if (r != PICOKEYS_OK) {

@@ -41,6 +41,7 @@ int cmd_get_metadata(void) {
         return SW_REFERENCE_NOT_FOUND();
     }
     if (key_ref != EF_PIV_PIN && key_ref != EF_PIV_PUK) {
+        if (meta && metadata.len < (key_ref == EF_PIV_KEY_CARDMGM ? 3u : 4u)) return SW_REFERENCE_NOT_FOUND();
         uint8_t attestation_meta[] = {PIV_ALGO_ECCP384, PINPOLICY_ONCE, TOUCHPOLICY_NEVER, ORIGIN_GENERATED};
         if (!meta && key_ref == EF_PIV_KEY_ATTESTATION) {
             meta = attestation_meta;

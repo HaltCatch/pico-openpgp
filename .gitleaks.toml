@@ -1,0 +1,10 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+targetRules = ["generic-api-key"]
+description = 'Public test attribute imports'
+regexTarget = 'line'
+paths = ['''^tests/(card_test_.*|curve25519_keys)\.py$''']
+regexes = ['''from card_const import KEY_ATTRIBUTES_''']
+condition = 'AND'

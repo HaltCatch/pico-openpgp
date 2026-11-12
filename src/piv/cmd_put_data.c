@@ -38,7 +38,11 @@ int cmd_piv_put_data(void) {
         return SW_WRONG_DATA();
     }
     if (a5c.data && a53.data) {
-        if (a5c.len != 3 || a5c.data[0] != 0x5F || a5c.data[1] != 0xC1) {
+        if (a5c.len != 3) {
+            return SW_WRONG_DATA();
+        }
+        uint32_t object_id = ((uint32_t)a5c.data[0] << 16) | ((uint32_t)a5c.data[1] << 8) | a5c.data[2];
+        if ((object_id & 0xFFFF00u) != 0x5FC100u && !piv_writable_vendor_object(object_id)) {
             return SW_WRONG_DATA();
         }
         uint16_t fid = (a5c.data[1] << 8 | a5c.data[2]);
@@ -46,22 +50,15 @@ int cmd_piv_put_data(void) {
         if (!ef) {
             return SW_MEMORY_FAILURE();
         }
-        if (fid == EF_PIV_CHUID && file_has_data(ef)) {
-            return SW_FUNC_NOT_SUPPORTED();
-        }
         if (a53.len > OPENPGP_MAX_OBJECT_SIZE) {
             return SW_WRONG_LENGTH();
         }
         if (a53.len > 0 && piv_is_certificate_fid(fid) && !piv_validate_certificate_object(a53.data, a53.len)) {
             return SW_WRONG_DATA();
         }
-        if (a53.len > 0) {
-            file_put_data(ef, CONST_BYTE_ARRAY(a53.data, a53.len));
-        }
-        else {
-            if (flash_clear_file(ef) != PICOKEYS_OK) {
-                return SW_MEMORY_FAILURE();
-            }
+        int ret = a53.len > 0 ? file_put_data(ef, CONST_BYTE_ARRAY(a53.data, a53.len)) : flash_clear_file(ef);
+        if (ret != PICOKEYS_OK) {
+            return SW_MEMORY_FAILURE();
         }
         flash_commit();
     }

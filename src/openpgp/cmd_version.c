@@ -18,9 +18,13 @@
 #include "openpgp.h"
 #include "version.h"
 
+WEAK void openpgp_app_version(uint8_t version[3]) { (void)version; }
+
 int cmd_version_openpgp(void) {
-    res_APDU[res_APDU_size++] = PIPGP_VERSION_MAJOR;
-    res_APDU[res_APDU_size++] = PIPGP_VERSION_MINOR;
-    res_APDU[res_APDU_size++] = 0x0;
+    uint8_t version[3] = {PIPGP_VERSION_MAJOR, PIPGP_VERSION_MINOR, 0};
+    openpgp_app_version(version);
+    res_APDU[res_APDU_size++] = version[0];
+    res_APDU[res_APDU_size++] = version[1];
+    res_APDU[res_APDU_size++] = version[2];
     return SW_OK();
 }

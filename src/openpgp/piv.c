@@ -23,6 +23,8 @@
 #include "files.h"
 #include "apdu.h"
 #include "picokeys.h"
+#include "picokeys_log.h"
+#include "mbedtls/asn1write.h"
 #include "serial.h"
 #include "random.h"
 #include "eac.h"
@@ -39,7 +41,6 @@
 #include "usb.h"
 #include "piv.h"
 
-#ifndef ENABLE_EMULATION
 bool piv_button_wait(void) {
     uint32_t event = EV_PRESS_BUTTON;
     queue_add_blocking(&card_to_usb_q, &event);
@@ -48,7 +49,6 @@ bool piv_button_wait(void) {
     } while (event != EV_BUTTON_PRESSED && event != EV_BUTTON_TIMEOUT && event != EV_BUTTON_CANCELLED);
     return event != EV_BUTTON_PRESSED;
 }
-#endif
 
 size_t piv_rsa_modulus_size(uint8_t algo) {
     if (algo == PIV_ALGO_RSA1024) {
@@ -150,44 +150,48 @@ int x509_create_cert(void *pk_ctx, uint8_t algo, uint8_t slot, bool attestation,
     mbedtls_x509write_cert ctx;
     mbedtls_x509write_crt_init(&ctx);
     mbedtls_x509write_crt_set_version(&ctx, MBEDTLS_X509_CRT_VERSION_3);
-    mbedtls_x509write_crt_set_validity(&ctx, "20240325000000", "20741231235959");
     uint8_t serial[20];
     random_fill_buffer(BYTE_ARRAY(serial, sizeof(serial)));
     serial[0] = (serial[0] & 0x7F) | 0x01;
-    mbedtls_x509write_crt_set_serial_raw(&ctx, serial, sizeof(serial));
     mbedtls_pk_context skey, ikey;
-    mbedtls_ecdsa_context actx; // attestation key
     mbedtls_pk_init(&skey);
     mbedtls_pk_init(&ikey);
+    int ret = 0;
+#define CERT_CHECK(call) do { ret = (call); if (ret != 0) goto cleanup; } while (0)
+    CERT_CHECK(mbedtls_x509write_crt_set_serial_raw(&ctx, serial, sizeof(serial)));
+    CERT_CHECK(mbedtls_x509write_crt_set_validity(&ctx, "20240325000000", "20741231235959"));
     if (algo == PIV_ALGO_RSA1024 || algo == PIV_ALGO_RSA2048 || algo == PIV_ALGO_RSA3072) {
-        mbedtls_pk_setup(&skey, mbedtls_pk_info_from_type(MBEDTLS_PK_RSA));
+        CERT_CHECK(mbedtls_pk_setup(&skey, mbedtls_pk_info_from_type(MBEDTLS_PK_RSA)));
+        CERT_CHECK(mbedtls_rsa_copy(mbedtls_pk_rsa(skey), pk_ctx));
     }
     else if (algo == PIV_ALGO_ECCP256 || algo == PIV_ALGO_ECCP384) {
-        mbedtls_pk_setup(&skey, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY));
+        CERT_CHECK(mbedtls_pk_setup(&skey, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY)));
+        CERT_CHECK(mbedtls_ecdsa_from_keypair(mbedtls_pk_ec(skey), pk_ctx));
     }
-    skey.pk_ctx = pk_ctx;
+    else { ret = MBEDTLS_ERR_PK_TYPE_MISMATCH; goto cleanup; }
     mbedtls_x509write_crt_set_subject_key(&ctx, &skey);
     char buf_sname[256];
     if (attestation) {
         sprintf(buf_sname, "C=ES,O=Pico Keys,CN=Pico OpenPGP PIV Attestation %X", slot);
-        mbedtls_x509write_crt_set_subject_name(&ctx, buf_sname);
-        mbedtls_x509write_crt_set_issuer_name(&ctx, "C=ES,O=Pico Keys,CN=Pico OpenPGP PIV Slot F9");
+        CERT_CHECK(mbedtls_x509write_crt_set_subject_name(&ctx, buf_sname));
+        CERT_CHECK(mbedtls_x509write_crt_set_issuer_name(&ctx, "C=ES,O=Pico Keys,CN=Pico OpenPGP PIV Slot F9"));
         file_t *ef_key = file_search_by_fid(EF_PIV_KEY_ATTESTATION, NULL, SPECIFY_EF);
-        mbedtls_ecdsa_init(&actx);
-        load_private_key_ecdsa(&actx, ef_key, false);
-        mbedtls_pk_setup(&ikey, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY));
-        ikey.pk_ctx = &actx;
+        CERT_CHECK(mbedtls_pk_setup(&ikey, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY)));
+        CERT_CHECK(load_private_key_ecdsa(mbedtls_pk_ec(ikey), ef_key, false));
         mbedtls_x509write_crt_set_issuer_key(&ctx, &ikey);
         uint8_t ver[] = {PIV_VERSION_MAJOR, PIV_VERSION_MINOR, 0};
-        mbedtls_x509write_crt_set_extension(&ctx, "\x2B\x06\x01\x04\x01\x82\xC4\x0A\x03\x03", 10, 0, ver, sizeof(ver));
-        uint32_t device_serial = get_serial();
-        mbedtls_x509write_crt_set_extension(&ctx, "\x2B\x06\x01\x04\x01\x82\xC4\x0A\x03\x07", 10, 0, (const uint8_t *)&device_serial, sizeof(device_serial));
+        CERT_CHECK(mbedtls_x509write_crt_set_extension(&ctx, "\x2B\x06\x01\x04\x01\x82\xC4\x0A\x03\x03", 10, 0, ver, sizeof(ver)));
+        uint8_t serial_der[8];
+        uint8_t *serial_cursor = serial_der + sizeof(serial_der);
+        int serial_len = mbedtls_asn1_write_int(&serial_cursor, serial_der, get_serial());
+        if (serial_len < 0) { ret = serial_len; goto cleanup; }
+        CERT_CHECK(mbedtls_x509write_crt_set_extension(&ctx, "\x2B\x06\x01\x04\x01\x82\xC4\x0A\x03\x07", 10, 0, serial_cursor, (size_t)serial_len));
         byte_array_t metadata = meta_find(slot);
         if (metadata.len >= 3) {
-            mbedtls_x509write_crt_set_extension(&ctx, "\x2B\x06\x01\x04\x01\x82\xC4\x0A\x03\x08", 10, 0, metadata.data + 1, 2);
+            CERT_CHECK(mbedtls_x509write_crt_set_extension(&ctx, "\x2B\x06\x01\x04\x01\x82\xC4\x0A\x03\x08", 10, 0, metadata.data + 1, 2));
         }
         uint8_t v = 1;
-        mbedtls_x509write_crt_set_extension(&ctx, "\x2B\x06\x01\x04\x01\x82\xC4\x0A\x03\x09", 10, 0, &v, sizeof(v));
+        CERT_CHECK(mbedtls_x509write_crt_set_extension(&ctx, "\x2B\x06\x01\x04\x01\x82\xC4\x0A\x03\x09", 10, 0, &v, sizeof(v)));
     }
     else {
         uint8_t wslot = slot;
@@ -198,8 +202,8 @@ int x509_create_cert(void *pk_ctx, uint8_t algo, uint8_t slot, bool attestation,
             wslot = 0x93;
         }
         sprintf(buf_sname, "C=ES,O=Pico Keys,CN=Pico OpenPGP PIV Slot %X", wslot);
-        mbedtls_x509write_crt_set_issuer_name(&ctx, buf_sname);
-        mbedtls_x509write_crt_set_subject_name(&ctx, buf_sname);
+        CERT_CHECK(mbedtls_x509write_crt_set_issuer_name(&ctx, buf_sname));
+        CERT_CHECK(mbedtls_x509write_crt_set_subject_name(&ctx, buf_sname));
         mbedtls_x509write_crt_set_issuer_key(&ctx, &skey);
     }
     if (algo == PIV_ALGO_ECCP384) {
@@ -209,23 +213,23 @@ int x509_create_cert(void *pk_ctx, uint8_t algo, uint8_t slot, bool attestation,
         mbedtls_x509write_crt_set_md_alg(&ctx, MBEDTLS_MD_SHA256);
     }
     if (slot == EF_PIV_KEY_ATTESTATION) {
-        mbedtls_x509write_crt_set_basic_constraints(&ctx, 1, 1);
+        CERT_CHECK(mbedtls_x509write_crt_set_basic_constraints(&ctx, 1, 1));
     }
     else {
-        mbedtls_x509write_crt_set_basic_constraints(&ctx, 0, 0);
+        CERT_CHECK(mbedtls_x509write_crt_set_basic_constraints(&ctx, 0, 0));
     }
-    mbedtls_x509write_crt_set_subject_key_identifier(&ctx);
-    mbedtls_x509write_crt_set_authority_key_identifier(&ctx);
+    CERT_CHECK(mbedtls_x509write_crt_set_subject_key_identifier(&ctx));
+    CERT_CHECK(mbedtls_x509write_crt_set_authority_key_identifier(&ctx));
     uint32_t key_usage = MBEDTLS_X509_KU_DIGITAL_SIGNATURE;
     if (slot == EF_PIV_KEY_ATTESTATION) {
         key_usage |= MBEDTLS_X509_KU_KEY_CERT_SIGN;
     }
-    mbedtls_x509write_crt_set_key_usage(&ctx, key_usage);
-    int ret = mbedtls_x509write_crt_der(&ctx, buffer, buffer_size, random_fill_iterator, NULL);
-    /* skey cannot be freed, as it is freed later */
-    if (attestation) {
-        mbedtls_ecdsa_free(&actx);
-    }
+    CERT_CHECK(mbedtls_x509write_crt_set_key_usage(&ctx, key_usage));
+    ret = mbedtls_x509write_crt_der(&ctx, buffer, buffer_size, random_fill_iterator, NULL);
+cleanup:
+    mbedtls_pk_free(&ikey);
+    mbedtls_pk_free(&skey);
+#undef CERT_CHECK
     mbedtls_x509write_crt_free(&ctx);
     return ret;
 }
@@ -303,18 +307,34 @@ static void scan_files_piv(void) {
             file_put_data(ef, CONST_BYTE_ARRAY(dhash, sizeof(dhash)));
         }
     }
-    if ((ef = file_search_by_fid(EF_PIV_KEY_ATTESTATION, NULL, SPECIFY_ANY))) {
-        if (!ef->data) {
-            printf("ATTESTATION key is empty. Initializing with random one\r\n");
-            mbedtls_ecdsa_context ecdsa;
-            mbedtls_ecdsa_init(&ecdsa);
-            int r = mbedtls_ecdsa_genkey(&ecdsa, MBEDTLS_ECP_DP_SECP384R1, random_fill_iterator, NULL);
-            r = store_keys(&ecdsa, ALGO_ECDSA, EF_PIV_KEY_ATTESTATION, false);
-            uint8_t cert[2048];
-            r = x509_create_cert(&ecdsa, PIV_ALGO_ECCP384, EF_PIV_KEY_ATTESTATION, false, cert, sizeof(cert));
-            ef = file_search_by_fid(EF_PIV_ATTESTATION, NULL, SPECIFY_ANY);
-            file_put_data(ef, CONST_BYTE_ARRAY(cert + sizeof(cert) - r, r));
-            mbedtls_ecdsa_free(&ecdsa);
+    file_t *attestation_key = file_search_by_fid(EF_PIV_KEY_ATTESTATION, NULL, SPECIFY_ANY);
+    file_t *attestation_cert = file_search_by_fid(EF_PIV_ATTESTATION, NULL, SPECIFY_ANY);
+    if (!attestation_key || !attestation_cert) {
+        PICOKEYS_LOG_ERROR("PIV", "Attestation files unavailable");
+        return;
+    }
+    if (!file_has_data(attestation_key) || !file_has_data(attestation_cert)) {
+        // If a previous write was interrupted, reuse the existing key. Never
+        // replace a persistent attestation identity just to recreate its cert.
+        bool new_key = !file_has_data(attestation_key);
+        mbedtls_ecdsa_context ecdsa;
+        mbedtls_ecdsa_init(&ecdsa);
+        int r = new_key ? mbedtls_ecdsa_genkey(&ecdsa, MBEDTLS_ECP_DP_SECP384R1, random_fill_iterator, NULL) :
+            load_private_key_ecdsa(&ecdsa, attestation_key, false);
+        uint8_t cert[2048];
+        if (r == 0) {
+            int cert_len = x509_create_cert(&ecdsa, PIV_ALGO_ECCP384, EF_PIV_KEY_ATTESTATION, false, cert, sizeof(cert));
+            if (cert_len <= 0 || (size_t)cert_len > sizeof(cert)) r = PICOKEYS_EXEC_ERROR;
+            else {
+                if (new_key) r = store_keys(&ecdsa, ALGO_ECDSA, EF_PIV_KEY_ATTESTATION, false);
+                if (r == PICOKEYS_OK)
+                    r = file_put_data(attestation_cert, CONST_BYTE_ARRAY(cert + sizeof(cert) - cert_len, cert_len));
+            }
+        }
+        mbedtls_ecdsa_free(&ecdsa);
+        if (r != PICOKEYS_OK) {
+            PICOKEYS_LOG_ERROR("PIV", "Attestation initialization failed: error=%d", r);
+            return;
         }
     }
     flash_commit();
@@ -336,17 +356,13 @@ static int piv_unload(void) {
 }
 
 void select_piv_aid(void) {
-    res_APDU_size = 0;
-    res_APDU[res_APDU_size++] = 0x61;
-    res_APDU[res_APDU_size++] = 0; //filled later
-    res_APDU[res_APDU_size++] = 0x4F;
-    res_APDU[res_APDU_size++] = 2;
-    res_APDU[res_APDU_size++] = 0x01;
-    res_APDU[res_APDU_size++] = 0x00;
-    res_APDU[res_APDU_size++] = 0x79;
-    res_APDU[res_APDU_size++] = 9;
-    memcpy(res_APDU + res_APDU_size, "\xA0\x00\x00\x03\x08\x00\x00\x10\x00", 9);
-    res_APDU_size += 9;
+    // Standard PIX and nested RID, as used by CanoKey and checked by GnuPG.
+    static const uint8_t apt[] = {
+        0x61, 0, 0x4f, 6, 0, 0, 0x10, 0, 1, 0,
+        0x79, 7, 0x4f, 5, 0xa0, 0, 0, 3, 8
+    };
+    memcpy(res_APDU, apt, sizeof(apt));
+    res_APDU_size = sizeof(apt);
     const char *app_label = "Pico Keys PIV";
     res_APDU[res_APDU_size++] = 0x50;
     res_APDU[res_APDU_size++] = strlen(app_label);

@@ -50,6 +50,11 @@
 #define PIV_DATA_ADMIN_ID 0x5FFF00u
 #define PIV_DATA_ATTESTATION_ID 0x5FFF01u
 
+static inline bool piv_writable_vendor_object(uint32_t object_id) {
+    return object_id == PIV_DATA_ADMIN_ID ||
+        (object_id >= 0x5FFF10u && object_id <= 0x5FFF15u);
+}
+
 #define PINPOLICY_DEFAULT 0
 #define PINPOLICY_NEVER 1
 #define PINPOLICY_ONCE 2

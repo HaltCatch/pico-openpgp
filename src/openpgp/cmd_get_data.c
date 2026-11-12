@@ -27,6 +27,9 @@ int cmd_get_data(void) {
     res_APDU_size = 0;
     uint16_t fid = (P1(apdu) << 8) | P2(apdu);
     uint16_t requested_fid = fid;
+    // Constructed BER data objects retain their outer tag. Primitive GET DATA
+    // returns the value. This is also how yubikit parses 6E, 65 and 7A.
+    bool constructed = ((fid > 0xff ? fid >> 8 : fid) & 0x20u) != 0;
     file_t *ef;
     if (!(ef = file_search_by_fid(fid, NULL, SPECIFY_EF))) {
         return SW_WRONG_P1P2();
@@ -76,7 +79,7 @@ int cmd_get_data(void) {
         }
         uint16_t fids[] = { 1, ef->fid };
         uint16_t data_len = parse_do(fids, 1);
-        if (!(file_get_type(ef) & FILE_DATA_FLASH)) {
+        if (!constructed && !(file_get_type(ef) & FILE_DATA_FLASH)) {
             uint8_t *p = NULL;
             tlv_item_t item;
             tlv_ctx_t ctxi;
@@ -96,7 +99,7 @@ int cmd_get_data(void) {
                 }
             }
         }
-        if (is_gpg == false) {
+        if (is_gpg == false && !constructed) {
             uint8_t off = 2;
             if (P1(apdu) > 0x0) {
                 off++;

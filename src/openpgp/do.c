@@ -217,7 +217,7 @@ int parse_keyinfo(const file_t *f, int mode) {
         res_APDU[res_APDU_size++] = 6;
     }
     file_t *ef = file_search_by_fid(EF_PK_SIG, NULL, SPECIFY_ANY);
-    res_APDU[res_APDU_size++] = 0x00;
+    res_APDU[res_APDU_size++] = 0x01; // OpenPGP key reference: signature
     if (ef && ef->data) {
         res_APDU[res_APDU_size++] = 0x01;
     }
@@ -226,7 +226,7 @@ int parse_keyinfo(const file_t *f, int mode) {
     }
 
     ef = file_search_by_fid(EF_PK_DEC, NULL, SPECIFY_ANY);
-    res_APDU[res_APDU_size++] = 0x01;
+    res_APDU[res_APDU_size++] = 0x02; // OpenPGP key reference: decryption
     if (ef && ef->data) {
         res_APDU[res_APDU_size++] = 0x01;
     }
@@ -235,7 +235,7 @@ int parse_keyinfo(const file_t *f, int mode) {
     }
 
     ef = file_search_by_fid(EF_PK_AUT, NULL, SPECIFY_ANY);
-    res_APDU[res_APDU_size++] = 0x02;
+    res_APDU[res_APDU_size++] = 0x03; // OpenPGP key reference: authentication
     if (ef && ef->data) {
         res_APDU[res_APDU_size++] = 0x01;
     }
@@ -368,6 +368,11 @@ const uint8_t algorithm_attr_ed448[] = {
 int parse_algo(const uint8_t *algo, uint16_t tag) {
     res_APDU[res_APDU_size++] = tag & 0xff;
     memcpy(res_APDU + res_APDU_size, algo, algo[0] + 1);
+    /* The same Weierstrass curve OIDs serve signing and key agreement.
+     * Advertise ECDH for the decryption slot so native clients accept imports. */
+    if (tag == EF_ALGO_DEC && algo[1] == ALGO_ECDSA) {
+        res_APDU[res_APDU_size + 1] = ALGO_ECDH;
+    }
     res_APDU_size += algo[0] + 1;
     return algo[0] + 2;
 }
@@ -459,8 +464,8 @@ int parse_algoinfo(const file_t *f, int mode) {
 int parse_app_data(const file_t *f, int mode) {
     (void) f;
     uint16_t fids[] = {
-        6,
-        EF_FULL_AID, EF_HIST_BYTES, EF_EXLEN_INFO, EF_GFM, EF_DISCRETE_DO, EF_KEY_INFO
+        5,
+        EF_FULL_AID, EF_HIST_BYTES, EF_EXLEN_INFO, EF_GFM, EF_DISCRETE_DO
     };
     res_APDU[res_APDU_size++] = EF_APP_DATA & 0xff;
     res_APDU[res_APDU_size++] = 0x82;
@@ -476,9 +481,9 @@ int parse_app_data(const file_t *f, int mode) {
 int parse_discrete_do(const file_t *f, int mode) {
     (void) f;
     uint16_t fids[] = {
-        11,
+        12,
         EF_EXT_CAP, EF_ALGO_SIG, EF_ALGO_DEC, EF_ALGO_AUT, EF_PW_STATUS, EF_FP, EF_CA_FP, EF_TS_ALL,
-        EF_UIF_SIG, EF_UIF_DEC, EF_UIF_AUT
+        EF_UIF_SIG, EF_UIF_DEC, EF_UIF_AUT, EF_KEY_INFO
     };
     res_APDU[res_APDU_size++] = EF_DISCRETE_DO & 0xff;
     res_APDU[res_APDU_size++] = 0x82;

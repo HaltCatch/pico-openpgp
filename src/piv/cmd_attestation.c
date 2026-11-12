@@ -28,12 +28,13 @@ int cmd_attestation(void) {
         return SW_REFERENCE_NOT_FOUND();
     }
     file_t *ef_key = NULL;
+    uint16_t fid = key_ref == 0x93 ? EF_PIV_KEY_RETIRED18 : key_ref;
     byte_array_t metadata = meta_find(key_ref);
     uint8_t *meta = metadata.data;
-    if (!(ef_key = file_search_by_fid(key_ref == 0x93 ? EF_PIV_KEY_RETIRED18 : key_ref, NULL, SPECIFY_EF)) || !file_has_data(ef_key)) {
+    if (!(ef_key = file_search_by_fid(fid, NULL, SPECIFY_EF)) || !file_has_data(ef_key)) {
         return SW_REFERENCE_NOT_FOUND();
     }
-    if (!meta) {
+    if (!meta || metadata.len < 4) {
         return SW_REFERENCE_NOT_FOUND();
     }
     if (meta[3] != ORIGIN_GENERATED) {
@@ -41,7 +42,7 @@ int cmd_attestation(void) {
     }
     int r = 0;
     uint8_t abuf[2048];
-    if (meta[0] == PIV_ALGO_RSA1024 || meta[0] == PIV_ALGO_RSA2048) {
+    if (meta[0] == PIV_ALGO_RSA1024 || meta[0] == PIV_ALGO_RSA2048 || meta[0] == PIV_ALGO_RSA3072) {
         mbedtls_rsa_context ctx;
         mbedtls_rsa_init(&ctx);
         r = load_private_key_rsa(&ctx, ef_key, false);
@@ -66,7 +67,7 @@ int cmd_attestation(void) {
     else {
         return SW_WRONG_DATA();
     }
-    if (r <= 0) {
+    if (r <= 0 || (size_t)r > sizeof(abuf)) {
         return SW_EXEC_ERROR();
     }
     memcpy(res_APDU, abuf + sizeof(abuf) - r, r);

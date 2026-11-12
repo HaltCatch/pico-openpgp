@@ -17,6 +17,7 @@
 
 #include <stdio.h>
 #include "openpgp.h"
+#include "picokeys_log.h"
 #include "do.h"
 #include "key_container.h"
 #include "random.h"
@@ -96,6 +97,7 @@ int cmd_keypair_gen(void) {
             mbedtls_ecp_keypair_init(&ecdsa);
             r = mbedtls_ecdsa_genkey(&ecdsa, gid, random_fill_iterator, NULL);
             if (r != 0) {
+                PICOKEYS_LOG_ERROR("OPENPGP", "ECC generation failed: curve=%d error=%d", (int)gid, r);
                 mbedtls_ecp_keypair_free(&ecdsa);
                 return SW_EXEC_ERROR();
             }
@@ -103,6 +105,7 @@ int cmd_keypair_gen(void) {
             r = store_keypair(&ecdsa, algo[0], fid, res_APDU, res_APDU_size);
             mbedtls_ecp_keypair_free(&ecdsa);
             if (r != PICOKEYS_OK) {
+                PICOKEYS_LOG_ERROR("OPENPGP", "Key storage failed: curve=%d slot=%u error=%d", (int)gid, (unsigned)fid, r);
                 return SW_EXEC_ERROR();
             }
         }

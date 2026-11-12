@@ -49,16 +49,7 @@ int cmd_set_mgmkey(void) {
     if (openpgp_key_container_store(key_ref, apdu.data + 3, pinlen, NULL, 0, true) != PICOKEYS_OK) {
         return SW_MEMORY_FAILURE();
     }
-    byte_array_t metadata = meta_find(key_ref);
-    uint8_t *meta = metadata.data;
-    uint8_t new_meta[4];
-    if (!meta) {
-        return SW_REFERENCE_NOT_FOUND();
-    }
-    memcpy(new_meta, meta, 4);
-    new_meta[0] = algo;
-    new_meta[1] = MGM_PIN_POLICY;
-    new_meta[2] = touch;
+    const uint8_t new_meta[] = {algo, MGM_PIN_POLICY, touch};
     if (meta_add(key_ref, CONST_BYTE_ARRAY(new_meta, sizeof(new_meta))) != PICOKEYS_OK || !flash_commit_sync(PIV_FLASH_COMMIT_TIMEOUT_MS)) {
         return SW_MEMORY_FAILURE();
     }

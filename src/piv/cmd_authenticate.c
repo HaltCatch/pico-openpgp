@@ -75,11 +75,9 @@ int cmd_piv_authenticate(void) {
         return SW_INCORRECT_PARAMS();
     }
     bool challenge_response = (operation_tag == 0x80 || operation_tag == 0x82) && operation.len > 0;
-#ifndef ENABLE_EMULATION
     if (meta[2] != TOUCHPOLICY_NEVER && (!pending_mgm_challenge || !challenge_response) && piv_button_wait()) {
         return SW_SECURITY_STATUS_NOT_SATISFIED();
     }
-#endif
     if (key_ref == EF_PIV_KEY_CARDMGM && meta[0] != algo && !(pending_mgm_challenge && challenge_response)) {
         return SW_INCORRECT_PARAMS();
     }
